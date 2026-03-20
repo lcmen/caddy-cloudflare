@@ -1,0 +1,105 @@
+name: Build Caddy with Cloudflare DNS
+
+on:
+  schedule:
+    - cron: '0 4 * * *'  # daily at 4am UTC
+  workflow_dispatch:       # manual trigger
+  push:
+    paths:
+      - '.github/workflows/build.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Get latest Caddy version
+        id: caddy_version
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/caddyserver/caddy/releases/latest \
+            | jq -r '.tag_name')
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Latest Caddy: $LATEST"
+
+      - name: Check if already built
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.caddy_version.outputs.version }}"
+          # Check if release with this tag already exists
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION")
+          if [ "$STATUS" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Release $VERSION already exists, skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "New version $VERSION, building."
+          fi
+
+      - name: Install Go
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install xcaddy
+        if: steps.check.outputs.skip == 'false'
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+
+      - name: Build Caddy with Cloudflare DNS plugin
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          xcaddy build ${{ steps.caddy_version.outputs.version }} \
+            --with github.com/caddy-dns/cloudflare \
+            --output caddy-cloudflare-linux-amd64
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.caddy_version.outputs.version }}"
+
+          # Create release
+          gh release create "$VERSION" \
+            --repo "${{ github.repository }}" \
+            --title "Caddy $VERSION + Cloudflare DNS" \
+            --notes "Automated build of Caddy $VERSION with caddy-dns/cloudflare plugin
+
+          ## Installation
+          Download the binary and install to /usr/local/bin/caddy:
+          \`\`\`bash
+          curl -L -o /usr/local/bin/caddy https://github.com/${{ github.repository }}/releases/download/$VERSION/caddy-cloudflare-linux-amd64
+          chmod +x /usr/local/bin/caddy
+          \`\`\`" \
+            caddy-cloudflare-linux-amd64
+
+      - name: Cleanup old releases (keep last 5)
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASES=$(gh release list --repo "${{ github.repository }}" \
+            --json tagName -q '.[].tagName')
+          COUNT=0
+          echo "$RELEASES" | while read -r TAG; do
+            COUNT=$((COUNT + 1))
+            if [ "$COUNT" -gt 5 ]; then
+              echo "Deleting old release: $TAG"
+              gh release delete "$TAG" --repo "${{ github.repository }}" --yes
+              git push --delete origin "$TAG" 2>/dev/null || true
+            fi
+          done
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.check.outputs.skip }}" = "true" ]; then
+            echo "✅ Caddy ${{ steps.caddy_version.outputs.version }} already built - no action needed"
+          else
+            echo "✅ Successfully built and released Caddy ${{ steps.caddy_version.outputs.version }}"
+          fi
