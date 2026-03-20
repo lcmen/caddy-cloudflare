@@ -51,12 +51,19 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
-      - name: Build Caddy with Cloudflare DNS plugin
+      - name: Build Caddy with Cloudflare DNS plugin (amd64)
         if: steps.check.outputs.skip == 'false'
         run: |
-          xcaddy build ${{ steps.caddy_version.outputs.version }} \
+          GOARCH=amd64 GOOS=linux xcaddy build ${{ steps.caddy_version.outputs.version }} \
             --with github.com/caddy-dns/cloudflare \
             --output caddy-cloudflare-linux-amd64
+
+      - name: Build Caddy with Cloudflare DNS plugin (arm64)
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          GOARCH=arm64 GOOS=linux xcaddy build ${{ steps.caddy_version.outputs.version }} \
+            --with github.com/caddy-dns/cloudflare \
+            --output caddy-cloudflare-linux-arm64
 
       - name: Create GitHub Release
         if: steps.check.outputs.skip == 'false'
@@ -69,32 +76,9 @@ jobs:
           gh release create "$VERSION" \
             --repo "${{ github.repository }}" \
             --title "Caddy $VERSION + Cloudflare DNS" \
-            --notes "Automated build of Caddy $VERSION with caddy-dns/cloudflare plugin
-
-          ## Installation
-          Download the binary and install to /usr/local/bin/caddy:
-          \`\`\`bash
-          curl -L -o /usr/local/bin/caddy https://github.com/${{ github.repository }}/releases/download/$VERSION/caddy-cloudflare-linux-amd64
-          chmod +x /usr/local/bin/caddy
-          \`\`\`" \
-            caddy-cloudflare-linux-amd64
-
-      - name: Cleanup old releases (keep last 5)
-        if: steps.check.outputs.skip == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RELEASES=$(gh release list --repo "${{ github.repository }}" \
-            --json tagName -q '.[].tagName')
-          COUNT=0
-          echo "$RELEASES" | while read -r TAG; do
-            COUNT=$((COUNT + 1))
-            if [ "$COUNT" -gt 5 ]; then
-              echo "Deleting old release: $TAG"
-              gh release delete "$TAG" --repo "${{ github.repository }}" --yes
-              git push --delete origin "$TAG" 2>/dev/null || true
-            fi
-          done
+            --notes "Automated build of Caddy $VERSION with caddy-dns/cloudflare plugin." \
+            caddy-cloudflare-linux-amd64 \
+            caddy-cloudflare-linux-arm64
 
       - name: Summary
         run: |
